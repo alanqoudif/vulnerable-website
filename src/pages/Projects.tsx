@@ -69,12 +69,13 @@ export function ProjectDetail() {
   const next = FLOW[idx + 1]
   const canMove = next && (isManager || p.owner_id === me?.user.id)
   const move = async () => { if (await run(() => api(`/v2/projects/${p.id}/transition`, { method: 'POST', body: { to: next } }), `Moved to ${next}`)) reload() }
+  const archive = async () => { if (await run(() => api(`/v2/projects/${p.id}/archive`, { method: 'POST' }), 'Project archived')) reload() }
   const addTask = async (e: FormEvent) => { e.preventDefault(); if (await run(() => api('/v2/tasks', { method: 'POST', body: { title: task, project_id: p.id } }), 'Task added')) { setTask(''); reload() } }
   const setStatus = async (tid: string, status: string) => { try { await api(`/v2/tasks/${tid}`, { method: 'PATCH', body: { status } }); reload() } catch (e: any) { toast(e.message, 'err') } }
   return (
     <>
       <p className="mb-2 text-sm"><Link to="/projects" className="text-slate-500 hover:text-slate-800">Projects</Link> <span className="text-slate-300">/</span> {p.code}</p>
-      <PageHeader title={p.name} subtitle={p.description} actions={<><Badge>{p.status}</Badge>{canMove && <Button onClick={move} disabled={busy}>Move to {next}</Button>}</>} />
+      <PageHeader title={p.name} subtitle={p.description} actions={<><Badge>{p.status}</Badge>{canMove && <Button onClick={move} disabled={busy}>Move to {next}</Button>}{isManager && p.status !== 'Archived' && <Button variant="secondary" onClick={archive} disabled={busy}>Archive project</Button>}</>} />
       <div className="mb-6 flex items-center gap-1" aria-label="Workflow">
         {FLOW.map((s, i) => <div key={s} className="flex-1"><div className={`h-1.5 rounded-full ${i <= idx ? 'bg-brand-600' : 'bg-slate-200'}`} /><p className={`mt-1 text-center text-[11px] ${i === idx ? 'font-semibold text-brand-700' : 'text-slate-400'}`}>{s}</p></div>)}
       </div>

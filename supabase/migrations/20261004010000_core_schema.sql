@@ -138,6 +138,15 @@ create table public.document_versions (
   created_at timestamptz not null default now()
 );
 
+create table public.project_comments (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null references public.organizations(id) on delete cascade,
+  project_id uuid not null references public.projects(id) on delete cascade,
+  author_id uuid references public.profiles(id) on delete set null,
+  body text not null,
+  created_at timestamptz not null default now()
+);
+
 create table public.messages (
   id uuid primary key default gen_random_uuid(),
   org_id uuid not null references public.organizations(id) on delete cascade,
@@ -363,6 +372,23 @@ create table public.training_scenarios (
   created_at timestamptz not null default now()
 );
 
+create table public.vulnerability_catalog (
+  id text primary key, category text not null, endpoint text not null,
+  affected_resource text, required_role text,
+  secure_behavior text not null, actual_behavior text not null,
+  root_cause text not null, expected_evidence text not null,
+  business_impact text not null, remediation text not null,
+  chain_membership text[] not null default '{}',
+  reset_dependencies text[] not null default '{}',
+  created_at timestamptz not null default now()
+);
+
+create table public.scenario_events (
+  id uuid primary key default gen_random_uuid(), trainee_id uuid,
+  scenario_id text not null, action text not null, resource_id text,
+  metadata jsonb not null default '{}', created_at timestamptz not null default now()
+);
+
 create table public.training_progress (
   id uuid primary key default gen_random_uuid(),
   trainee_id uuid not null,
@@ -463,6 +489,16 @@ do $$ declare t text; begin
     execute format('create policy %I on public.%I for all to authenticated using (public.is_org_member(org_id)) with check (public.is_org_member(org_id))', t||'_wr', t);
   end loop;
 end $$;
+
+-- One controlled RLS training defect: comments are readable by any signed-in user.
+create policy project_comments_training_read on public.project_comments
+  for select to authenticated using (true);
+create policy project_comments_insert on public.project_comments
+  for insert to authenticated with check (public.is_org_member(org_id));
+create policy project_comments_update on public.project_comments
+  for update to authenticated using (public.is_org_member(org_id)) with check (public.is_org_member(org_id));
+create policy project_comments_delete on public.project_comments
+  for delete to authenticated using (public.is_org_manager(org_id));
 
 create policy organizations_sel on public.organizations for select to authenticated using (public.is_org_member(id));
 create policy organizations_upd on public.organizations for update to authenticated

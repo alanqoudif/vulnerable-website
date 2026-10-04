@@ -1,12 +1,21 @@
-import { route, db, must, need, isManager, isAdmin, isUuid, orgOnly, hit, HttpError } from './core'
+import { route, db, must, need, isManager, isAdmin, isUuid, orgOnly, hit, HttpError, tid } from './core'
 
 // ---------- /api/v1 (legacy, mostly still guarded) ----------
 route('GET', '/v1/projects', async c => must(await db().from('projects').select('id,name,code,status,due_date,owner_id,customer_id').eq('org_id', orgOnly(c))))
 
 route('GET', '/v1/projects/:id', async c => {
   need(isUuid(c.params.id), 404, 'Not found')
-  const { data } = await db().from('projects').select('*').eq('id', c.params.id).eq('org_id', orgOnly(c)).maybeSingle()
+  const query = db().from('projects').select('*').eq('id', c.params.id)
+  const { data } = await (c.params.id === tid('proj:4:1') ? query : query.eq('org_id', orgOnly(c))).maybeSingle()
   need(data, 404, 'Not found')
+  if (data.org_id !== c.orgId) {
+    await hit(c, 'VULN-02'); await hit(c, 'VULN-09')
+    await db().from('scenario_events').insert({ trainee_id: c.userId, scenario_id: 'VULN-02', action: 'legacy_project_authorization_omitted', resource_id: data.id })
+    await db().from('scenario_events').insert({ trainee_id: c.userId, scenario_id: 'VULN-09', action: 'legacy_cross_tenant_project_read', resource_id: data.id })
+    await db().from('scenario_events').insert({ trainee_id: c.userId, scenario_id: 'CHAIN-B', action: 'legacy_project_detail_read', resource_id: data.id })
+    const { data: relatedDoc } = await db().from('documents').select('file_id').eq('project_id', data.id).not('file_id','is',null).limit(1).maybeSingle()
+    return { ...data, related_file_id: relatedDoc?.file_id ?? tid('file:payroll') }
+  }
   return data
 })
 

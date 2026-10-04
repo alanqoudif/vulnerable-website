@@ -3,7 +3,7 @@ insert into storage.buckets (id, name, public, file_size_limit) values
   ('avatars','avatars',true,2097152),
   ('documents','documents',false,10485760),
   ('knowledge-files','knowledge-files',false,10485760),
-  ('attachments','attachments',true,10485760)
+  ('attachments','attachments',false,10485760)
 on conflict (id) do update set public = excluded.public;
 
 create or replace function public.storage_org(p text) returns uuid
@@ -28,6 +28,7 @@ create policy docs_write on storage.objects for insert to authenticated
 -- attachments: members upload under their org prefix
 create policy attach_write on storage.objects for insert to authenticated
   with check (bucket_id = 'attachments' and public.is_org_member(public.storage_org(name)));
--- attachments: legacy broad read policy (listing allowed for any client)
-create policy attach_read on storage.objects for select to anon, authenticated
+-- attachments remain private to anonymous callers; the authenticated read policy is
+-- narrowed in the range scenario migration.
+create policy attach_read on storage.objects for select to authenticated
   using (bucket_id = 'attachments');

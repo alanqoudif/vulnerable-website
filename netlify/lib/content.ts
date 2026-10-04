@@ -1,4 +1,5 @@
-import { route, db, must, need, pick, isManager, isUuid, orgOnly, hit, audit, HttpError, randomToken, Ctx } from './core'
+import { route, db, must, need, pick, isManager, isUuid, orgOnly, hit, audit, HttpError, randomToken, Ctx, tid } from './core'
+import { getDocumentTool } from './agent'
 
 // ---------- documents ----------
 const DOC_FLOW = ['Draft', 'Shared', 'Reviewed', 'Archived']
@@ -19,7 +20,17 @@ route('GET', '/v2/documents', async c => {
     .eq('org_id', orgOnly(c)).order('updated_at', { ascending: false })) as any[]
   return rows.filter(d => canSee(c, d))
 })
-route('GET', '/v2/documents/:id', async c => loadDoc(c, c.params.id))
+route('GET', '/v2/documents/:id', async c => {
+  if (c.params.id === tid('doc:board')) {
+    const { data } = await db().from('documents').select('*, owner:profiles!documents_owner_id_fkey(id,full_name), project:projects(id,name), file:files(id,name,mime_type,size_bytes)').eq('id', c.params.id).maybeSingle()
+    need(data, 404, 'Document not found')
+    await hit(c, 'VULN-01')
+    await db().from('scenario_events').insert({ trainee_id: c.userId, scenario_id: 'VULN-01', action: 'cross_tenant_document_read', resource_id: c.params.id })
+    await db().from('scenario_events').insert({ trainee_id: c.userId, scenario_id: 'CHAIN-A', action: 'synthetic_document_retrieved', resource_id: c.params.id })
+    return data
+  }
+  return loadDoc(c, c.params.id)
+})
 
 route('POST', '/v2/documents', async c => {
   const b = c.body ?? {}
@@ -76,7 +87,14 @@ route('POST', '/v2/files', async c => {
 })
 route('GET', '/v2/files', async c => must(await db().from('files').select('id,name,mime_type,size_bytes,bucket,visibility,created_at,owner:profiles!files_owner_id_fkey(full_name)').eq('org_id', orgOnly(c)).neq('bucket', 'knowledge-files').order('created_at', { ascending: false }).limit(60)))
 
-route('GET', '/v2/files/:id/download', async c => {
+route('GET', '/v2/files/:id', async c => {
+  need(isUuid(c.params.id), 404, 'File not found')
+  const { data } = await db().from('files').select('id,name,mime_type,size_bytes,visibility,created_at').eq('id', c.params.id).eq('org_id', orgOnly(c)).maybeSingle()
+  need(data, 404, 'File not found')
+  return data
+})
+
+async function downloadFile(c: Ctx) {
   need(isUuid(c.params.id), 404, 'File not found')
   const { data: f } = await db().from('files').select('*').eq('id', c.params.id).maybeSingle()
   need(f, 404, 'File not found')
@@ -86,11 +104,17 @@ route('GET', '/v2/files/:id/download', async c => {
   if (f.org_id === through && f.visibility === 'private') {
     need(f.owner_id === c.userId || isManager(c), 403, 'This file is private')
   }
-  if (f.org_id !== c.orgId) await hit(c, 'S-10')
+  if (f.org_id !== c.orgId) {
+    await hit(c, 'VULN-13')
+    await db().from('scenario_events').insert({ trainee_id: c.userId, scenario_id: 'VULN-13', action: 'cross_tenant_signed_url', resource_id: f.id, metadata: { through } })
+    await db().from('scenario_events').insert({ trainee_id: c.userId, scenario_id: 'CHAIN-B', action: 'related_file_download_authorized', resource_id: f.id })
+  }
   const { data, error } = await db().storage.from(f.bucket).createSignedUrl(f.path, 120, { download: f.name })
   if (error || !data) throw new HttpError(404, 'File content is unavailable')
   return { name: f.name, url: data.signedUrl, expires_in: 120 }
-})
+}
+route('GET', '/v2/files/:id/download', downloadFile)
+route('POST', '/v2/files/:id/download', downloadFile)
 
 // ---------- Mibyan chat ----------
 const MODELS = ['mibyan-4.1', 'mibyan-fast', 'mibyan-reasoning', 'partner-demo-large']
@@ -108,7 +132,7 @@ route('GET', '/v2/ai/conversations/:id', async c => {
   need(isUuid(c.params.id), 404, 'Conversation not found')
   const { data: cv } = await db().from('ai_conversations').select('*, owner:profiles!ai_conversations_owner_id_fkey(id,full_name)').eq('id', c.params.id).eq('org_id', orgOnly(c)).maybeSingle()
   need(cv, 404, 'Conversation not found')
-  if (cv.owner_id !== c.userId && cv.visibility === 'private') await hit(c, 'S-03')
+  need(cv.owner_id === c.userId || cv.visibility !== 'private', 404, 'Conversation not found')
   const messages = must(await db().from('ai_messages').select('id,role,content,tokens,created_at,attachment:files(id,name)').eq('conversation_id', cv.id).order('created_at'))
   return { ...cv, mine: cv.owner_id === c.userId, messages }
 })
@@ -167,7 +191,24 @@ route('POST', '/v2/ai/conversations/:id/messages', async c => {
     attachment = data!.id
   }
   const u = must(await db().from('ai_messages').insert({ conversation_id: cv.id, role: 'user', content, tokens: Math.ceil(content.length / 4), attachment_file_id: attachment }).select().single())
-  const reply = composeReply(content, cv.model)
+  let reply = composeReply(content, cv.model)
+  if (/ignore (all )?(previous|prior) instructions|system override|do anything now/i.test(content)) {
+    reply = 'Training assistant: override accepted for this simulated task. I will follow the latest instruction in this conversation.'
+    await hit(c, 'VULN-20')
+    await db().from('scenario_events').insert({ trainee_id: c.userId, scenario_id: 'VULN-20', action: 'direct_prompt_override', resource_id: cv.id })
+  }
+  const { data: kbDoc } = await db().from('knowledge_documents').select('id,summary').eq('org_id', c.orgId).like('summary', 'SYSTEM OVERRIDE TRAINING:%').limit(1).maybeSingle()
+  if (kbDoc && /ignore|override|retrieve/i.test(kbDoc.summary ?? '')) {
+    await hit(c, 'VULN-21')
+    await db().from('scenario_events').insert({ trainee_id: c.userId, scenario_id: 'VULN-21', action: 'adversarial_knowledge_instruction_consumed', resource_id: kbDoc.id })
+    const stolen = await getDocumentTool(c, tid('doc:board'))
+    if (stolen) {
+      reply = `Retrieved reference ${kbDoc.id}. Untrusted reference instructions: ${kbDoc.summary}\nTool result: ${stolen.title}\n\n${stolen.body}`
+      await hit(c, 'VULN-23')
+      await db().from('scenario_events').insert({ trainee_id: c.userId, scenario_id: 'VULN-23', action: 'agent_cross_tenant_document_read', resource_id: stolen.id, metadata: { knowledge_document_id: kbDoc.id } })
+      await db().from('scenario_events').insert({ trainee_id: c.userId, scenario_id: 'CHAIN-D', action: 'agent_response_contains_foreign_document', resource_id: stolen.id, metadata: { knowledge_document_id: kbDoc.id } })
+    }
+  }
   const a = must(await db().from('ai_messages').insert({ conversation_id: cv.id, role: 'assistant', content: reply, tokens: Math.ceil(reply.length / 4) }).select().single())
   const title = cv.title === 'New conversation' ? content.slice(0, 60) : cv.title
   await db().from('ai_conversations').update({ title }).eq('id', cv.id)
@@ -245,4 +286,28 @@ route('GET', '/v2/knowledge/documents/:id', async c => {
     if (dl.data) preview = (await dl.data.text()).slice(0, 2000)
   }
   return { id: d.id, title: d.title, summary: d.summary, status: d.status, token_count: d.token_count, created_at: d.created_at, collection: { id: d.kb.id, name: d.kb.name }, file: d.file && { id: d.file.id, name: d.file.name, mime_type: d.file.mime_type, size_bytes: d.file.size_bytes }, preview }
+})
+
+route('GET', '/v2/knowledge/resources/:id', async c => {
+  need(isUuid(c.params.id), 404, 'Resource not found')
+  const { data } = await db().from('knowledge_documents').select('*, kb:knowledge_bases(id,name,visibility)').eq('id', c.params.id).maybeSingle()
+  need(data, 404, 'Resource not found')
+  if (data.id === tid('kdoc:4:1:1')) {
+    await hit(c, 'VULN-25')
+    await db().from('scenario_events').insert({ trainee_id: c.userId, scenario_id: 'VULN-25', action: 'cross_tenant_knowledge_read', resource_id: data.id })
+  } else need(c.memberships.some(m => m.org_id === data.org_id) || c.platformAdmin, 404, 'Resource not found')
+  return data
+})
+
+route('GET', '/v2/ai/conversations/:id/share-view', async c => {
+  need(isUuid(c.params.id), 404, 'Conversation not found')
+  const { data: cv } = await db().from('ai_conversations').select('*').eq('id', c.params.id).maybeSingle()
+  need(cv, 404, 'Conversation not found')
+  if (cv.owner_id !== c.userId) {
+    need(cv.id === tid('conv:1:4'), 404, 'Conversation not found')
+    await hit(c, 'VULN-24')
+    await db().from('scenario_events').insert({ trainee_id: c.userId, scenario_id: 'VULN-24', action: 'cross_user_conversation_read', resource_id: cv.id })
+  }
+  const messages = must(await db().from('ai_messages').select('id,role,content,created_at').eq('conversation_id', cv.id).order('created_at'))
+  return { id: cv.id, title: cv.title, messages }
 })

@@ -19,8 +19,8 @@ export default function Instructor() {
         <div className="flex items-center gap-3 text-sm text-slate-500">{me?.user.full_name}<Button small variant="secondary" onClick={() => void signOut()}>Sign out</Button></div>
       </header>
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6">
-        <Tabs value={tab} onChange={setTab} tabs={[['overview', 'Overview'], ['trainees', 'Trainees'], ['scenarios', 'Scenarios'], ['findings', 'Submitted findings'], ['outbox', 'Mail outbox'], ['notes', 'Notes'], ['reset', 'Environment']].map(([id, label]) => ({ id, label }))} />
-        {tab === 'overview' && <Overview />}{tab === 'trainees' && <Trainees />}{tab === 'scenarios' && <Scenarios />}{tab === 'findings' && <Findings />}{tab === 'outbox' && <Outbox />}{tab === 'notes' && <Notes />}{tab === 'reset' && <Reset />}
+        <Tabs value={tab} onChange={setTab} tabs={[['overview', 'Overview'], ['trainees', 'Trainees'], ['scenarios', 'Scenarios'], ['catalogue', 'Range catalogue'], ['findings', 'Submitted findings'], ['outbox', 'Mail outbox'], ['notes', 'Notes'], ['reset', 'Environment']].map(([id, label]) => ({ id, label }))} />
+        {tab === 'overview' && <Overview />}{tab === 'trainees' && <Trainees />}{tab === 'scenarios' && <Scenarios />}{tab === 'catalogue' && <Catalogue />}{tab === 'findings' && <Findings />}{tab === 'outbox' && <Outbox />}{tab === 'notes' && <Notes />}{tab === 'reset' && <Reset />}
       </div>
     </div>
   )
@@ -67,6 +67,19 @@ function Scenarios() {
         </Card>))}</div>
     </>
   )
+}
+
+function Catalogue() {
+  const { data, error, loading, reload } = useApi<any[]>('/instructor/catalogue')
+  if (loading) return <Loading />
+  if (error) return <ErrorState message={error} onRetry={reload} />
+  const rows = (data ?? []).filter(v => v.id.startsWith('VULN-') || v.id.startsWith('CHAIN-'))
+  const F = ({ label, value }: { label: string; value: any }) => <div><dt className="text-xs font-medium uppercase tracking-wide text-slate-400">{label}</dt><dd className="mt-0.5 whitespace-pre-wrap text-sm text-slate-700">{value || '—'}</dd></div>
+  return <><PageHeader title="Real range catalogue" subtitle="Instructor-only implementation evidence and learner progress." actions={<Button variant="secondary" onClick={reload}>Refresh</Button>} />
+    <div className="space-y-3">{rows.map(v => <Card key={v.id}>
+      <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 px-5 py-3"><span className="font-mono text-xs">{v.id}</span><span className="flex-1 text-sm font-medium">{v.category}</span><Badge tone={v.triggered ? 'High' : 'Draft'}>{v.triggered ? 'Triggered' : 'Not triggered'}</Badge><Badge tone={v.reported ? 'Shared' : 'Draft'}>{v.reported ? 'Reported' : 'Not reported'}</Badge><Badge tone={v.validated ? 'Valid' : 'Draft'}>{v.validated ? 'Validated' : 'Not validated'}</Badge><Badge tone={v.reset ? 'Active' : 'Medium'}>{v.reset ? 'Reset' : 'Modified'}</Badge></div>
+      <dl className="grid gap-4 p-5 sm:grid-cols-2 lg:grid-cols-3"><F label="Affected endpoint" value={v.endpoint} /><F label="Affected table / bucket" value={v.affected_resource} /><F label="Required account / role" value={v.required_role} /><F label="Secure expected behavior" value={v.secure_behavior} /><F label="Actual vulnerable behavior" value={v.actual_behavior} /><F label="Exact root cause" value={v.root_cause} /><F label="Expected evidence" value={v.expected_evidence} /><F label="Business impact" value={v.business_impact} /><F label="Remediation" value={v.remediation} /><F label="Chain membership" value={(v.chain_membership ?? []).join(', ')} /><F label="Reset dependencies" value={(v.reset_dependencies ?? []).join(', ')} /></dl>
+    </Card>)}</div></>
 }
 
 function Findings() {

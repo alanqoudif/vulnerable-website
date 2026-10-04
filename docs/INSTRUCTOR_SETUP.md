@@ -4,7 +4,7 @@
 
 | Account | Email | Password | Notes |
 |---|---|---|---|
-| Instructor | `instructor@training.nuqta-demo.test` | `Instructor#2026` | **Change this password after first sign-in.** Redirects to `/instructor`. |
+| Instructor | `instructor@training.nuqta-demo.test` | `Instructor#2026` | Rotate through the isolated project's Auth administration before use. Redirects to `/instructor`. |
 | Platform admin | `platform.admin@nuqta-demo.test` | `Welcome#2026` | Can switch to any organization. |
 | Org users | `<first>.<last>@<org-domain>` | `Welcome#2026` | 6 per organization: 1 administrator, 1 manager, 4 employees. |
 
@@ -17,12 +17,12 @@ One consultant (`user 2:6`) belongs to two organizations to exercise the organiz
 
 ## Setting up the instructor
 
-* The instructor user is created by `supabase/instructor/*_instructor_setup.sql`, which also loads the scenario catalogue into `training_scenarios`. **This folder and table are instructor-confidential.**
+* Apply all files in `supabase/migrations/` in timestamp order, including `20261004051700_real_training_scenarios.sql`. Then run `supabase/instructor/*_instructor_setup.sql`, which creates the instructor and loads its private catalogue. **This folder and the instructor catalogue are confidential.**
 * Only profiles with `is_instructor = true` can call `/api/instructor/*`; other callers receive 404. Scenario metadata is never returned by any trainee route and RLS denies direct table access.
 
 ## Instructor console
 
-Overview · Trainees · Scenarios (full metadata + discovered state) · Submitted findings (status, score, scenario match, comments) · Mail outbox (simulated reset emails) · Notes · Environment.
+Overview · Trainees · Scenarios · Range catalogue (implementation details and trigger/report/validation/reset state) · Submitted findings · Mail outbox · Notes · Environment.
 
 Discovery is recorded server-side when a trainee exercises a behaviour; signed-out activity appears as “Unattributed”.
 
@@ -30,7 +30,9 @@ Discovery is recorded server-side when a trainee exercises a behaviour; signed-o
 
 Instructor console → **Environment** → type `RESET`. This:
 1. removes seeded storage objects,
-2. runs `training.reset()` (deletes non-instructor auth users and all organizations with cascading data, clears reset codes, rate limits and scenario progress),
+2. runs `training.reset()` through `training_reset()` (deletes non-instructor auth users and organizations with cascading data, clears reset codes, rate limits, scenario progress, and runtime trigger events, and advances the minimum accepted trainee token issue time),
 3. re-runs the deterministic seed (`training.seed()`) and re-uploads synthetic files.
 
 Kept: instructor account, scenario catalogue, instructor notes, submitted findings and comments.
+
+If the project rejects the reset function with `DELETE requires a WHERE clause`, apply the additive migration `20261004051800_training_reset_where_guard.sql` once. It preserves the existing schema and adds explicit `WHERE true` predicates to the intentionally global deterministic reset deletes.

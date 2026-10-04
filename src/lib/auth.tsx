@@ -47,7 +47,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data }) => {
       setSession(data.session)
-      if (data.session) await load()
+      if (data.session) {
+        try {
+          const r = await api<{ id: string }>('/v2/account/sessions/register', { method: 'POST', body: {} })
+          sessionStorage.setItem('nq_sid', r.id)
+        } catch { /* session registration is retried at sign-in */ }
+        await load()
+      }
       setReady(true)
     })
     const { data: sub } = supabase.auth.onAuthStateChange((evt, s) => {
@@ -56,10 +62,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         void (async () => {
           resetContext()
           try {
-            if (!sessionStorage.getItem('nq_sid')) {
-              const r = await api<{ id: string }>('/v2/account/sessions/register', { method: 'POST', body: {} })
-              sessionStorage.setItem('nq_sid', r.id)
-            }
+            const r = await api<{ id: string }>('/v2/account/sessions/register', { method: 'POST', body: {} })
+            sessionStorage.setItem('nq_sid', r.id)
           } catch { /* non-critical */ }
           await load()
         })()
@@ -76,7 +80,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     isAdmin: me?.role === 'organization_admin',
     refresh: load,
     switchOrg: async id => { store.orgId = id; resetContext(); await load() },
-    signOut: async () => { store.orgId = null; await supabase.auth.signOut() },
+    signOut: async () => {
+      const current = sessionStorage.getItem('nq_sid')
+      if (current) { try { await api(`/v2/account/sessions/${current}`, { method: 'DELETE' }) } catch { /* best-effort local logout */ } }
+      store.orgId = null
+      await supabase.auth.signOut()
+    },
   }
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
 }

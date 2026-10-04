@@ -129,6 +129,30 @@ route('POST', '/v2/invoices/:id/transition', async c => {
   await audit(c, 'invoice.' + to.toLowerCase(), 'invoice', inv.id)
   return row
 })
+route('PATCH', '/v2/invoices/:id/status', async c => {
+  const inv = await loadInvoice(c, c.params.id)
+  need(isManager(c), 403, 'Only invoice managers can change status')
+  const to = c.body?.status
+  need(INV_FLOW.includes(to), 400, 'Invalid invoice status')
+  const row = must(await db().from('invoices').update({ status: to }).eq('id', inv.id).select().single())
+  if (INV_FLOW.indexOf(to) !== INV_FLOW.indexOf(inv.status) + 1) {
+    await hit(c, 'VULN-06')
+    await db().from('scenario_events').insert({ trainee_id: c.userId, scenario_id: 'VULN-06', action: 'invalid_invoice_transition_persisted', resource_id: inv.id, metadata: { from: inv.status, to } })
+  }
+  return row
+})
+route('POST', '/v2/invoices/:id/approve', async c => {
+  const inv = await loadInvoice(c, c.params.id)
+  need(isManager(c), 403, 'Only managers can approve invoices')
+  need(['Sent','Approved'].includes(inv.status), 409, 'Invoice is not ready for approval')
+  const { count } = await db().from('scenario_events').select('id', { count: 'exact', head: true }).eq('trainee_id', c.userId).eq('scenario_id', 'VULN-07').eq('resource_id', inv.id)
+  need((count ?? 0) < 3, 409, 'Approval replay limit reached')
+  await db().from('audit_logs').insert({ org_id: inv.org_id, actor_id: c.userId, action: 'invoice.approved', entity_type: 'invoice', entity_id: inv.id, metadata: { source: 'training_approval' }, ip: c.ip })
+  const row = must(await db().from('invoices').update({ status: 'Approved' }).eq('id', inv.id).select().single())
+  await hit(c, 'VULN-07')
+  await db().from('scenario_events').insert({ trainee_id: c.userId, scenario_id: 'VULN-07', action: 'invoice_approval_effect', resource_id: inv.id })
+  return row
+})
 route('GET', '/v2/invoices/:id/items', async c => {
   need(isUuid(c.params.id), 404, 'Invoice not found')
   const { data: inv } = await db().from('invoices').select('id,number,currency,org_id,status').eq('id', c.params.id).maybeSingle()
@@ -177,6 +201,10 @@ route('PATCH', '/v2/org/settings', async c => {
   const patch = pick(c.body, ['name', 'billing_email', 'industry'])
   if (c.body?.settings && typeof c.body.settings === 'object') patch.settings = c.body.settings
   const row = must(await db().from('organizations').update(patch).eq('id', orgOnly(c)).select('id,name,billing_email,industry,settings').single())
+  if (ctx?.claims?.role === 'organization_admin' && c.role !== 'organization_admin') {
+    await hit(c, 'VULN-17')
+    await db().from('scenario_events').insert({ trainee_id: c.userId, scenario_id: 'VULN-17', action: 'client_role_claim_authorized', resource_id: c.orgId! })
+  }
   await audit(c, 'org.settings_updated', 'organization', c.orgId!)
   return row
 })
@@ -219,15 +247,19 @@ route('GET', '/v2/invitations/lookup/:token', async c => {
   need(data && data.status === 'Sent' && new Date(data.expires_at) > new Date(), 404, 'This invitation is not valid')
   return { email: data!.email, organization: (data as any).organizations.name }
 }, { auth: false })
-route('POST', '/v2/invitations/accept', async c => {
+async function acceptInvite(c: Ctx, token?: string, secure = false) {
   const b = c.body ?? {}
-  need(b.token && b.password && b.full_name, 400, 'Name and password are required')
+  const inviteToken = token ?? b.token
+  need(inviteToken && b.password && b.full_name, 400, 'Name and password are required')
   need(String(b.password).length >= 10, 400, 'Password must be at least 10 characters')
-  const { data: inv } = await db().from('invitations').select('*').eq('token', b.token).maybeSingle()
+  const { data: inv } = await db().from('invitations').select('*').eq('token', inviteToken).maybeSingle()
   need(inv && inv.status === 'Sent' && new Date(inv.expires_at) > new Date(), 404, 'This invitation is not valid')
-  const role = b.role ?? inv.role // role chosen on the acceptance screen
+  const role = secure ? inv.role : (b.role ?? inv.role)
   need(['employee', 'manager', 'organization_admin'].includes(role), 400, 'Invalid role')
-  if (b.role && b.role !== inv.role) await hit(c, 'S-23')
+  if (!secure && b.role && b.role !== inv.role) {
+    await hit(c, 'S-23'); await hit(c, 'VULN-05')
+    await db().from('scenario_events').insert({ trainee_id: c.userId, scenario_id: 'VULN-05', action: 'invitation_role_overridden', resource_id: inv.id, metadata: { requested_role: b.role, invitation_role: inv.role } })
+  }
   await db().from('invitations').update({ status: 'Accepted' }).eq('id', inv.id)
   const created = await db().auth.admin.createUser({ email: inv.email, password: b.password, email_confirm: true, user_metadata: { full_name: b.full_name } })
   if (created.error) throw new HttpError(409, 'An account with this email already exists')
@@ -235,20 +267,34 @@ route('POST', '/v2/invitations/accept', async c => {
   await db().from('profiles').insert({ id: uid, email: inv.email, full_name: String(b.full_name).slice(0, 80), default_org_id: inv.org_id, title: 'New member' })
   await db().from('organization_members').insert({ org_id: inv.org_id, user_id: uid, role })
   await db().from('invitations').update({ status: 'Member Created' }).eq('id', inv.id)
+  if (!secure && role === 'organization_admin' && inv.role !== role) await db().from('scenario_events').insert({ trainee_id: uid, scenario_id: 'CHAIN-C', action: 'invitee_created_as_synthetic_admin', resource_id: inv.id, metadata: { organization_id: inv.org_id } })
   await db().from('audit_logs').insert({ org_id: inv.org_id, actor_id: uid, action: 'member.joined', entity_type: 'member', entity_id: uid, metadata: { role }, ip: c.ip })
   return { ok: true, email: inv.email }
-}, { auth: false })
+}
+route('POST', '/v2/invitations/accept', async c => acceptInvite(c), { auth: false })
+route('POST', '/v2/invitations/:token/accept', async c => acceptInvite(c, c.params.token), { auth: false })
+route('POST', '/v2/invitations/:token/complete', async c => acceptInvite(c, c.params.token, true), { auth: false })
 
 // ---------- account ----------
 route('PATCH', '/v2/account/profile', async c => {
   const patch = pick(c.body, ['full_name', 'title', 'phone', 'avatar_path'])
   if (patch.avatar_path) need(String(patch.avatar_path).startsWith(c.userId + '/'), 400, 'Invalid avatar path')
-  return must(await db().from('profiles').update(patch).eq('id', c.userId).select('id,full_name,title,phone,avatar_path,email').single())
+  const profile = must(await db().from('profiles').update(patch).eq('id', c.userId).select('id,full_name,title,phone,avatar_path,email').single())
+  if (['employee','manager','organization_admin'].includes(c.body?.role)) {
+    const { data } = await db().from('organization_members').update({ role: c.body.role }).eq('user_id', c.userId).eq('org_id', orgOnly(c)).select().maybeSingle()
+    if (data) { await hit(c, 'VULN-04'); await db().from('scenario_events').insert({ trainee_id: c.userId, scenario_id: 'VULN-04', action: 'profile_mass_assignment_role_change', resource_id: c.userId, metadata: { role: c.body.role } }) }
+  }
+  return profile
 })
 route('POST', '/v2/account/password', async c => {
+  need(!c.profile?.is_instructor, 403, 'Password changes are unavailable for the instructor account in this range')
   need(String(c.body?.password ?? '').length >= 10, 400, 'Password must be at least 10 characters')
   const r = await db().auth.admin.updateUserById(c.userId, { password: c.body.password })
   if (r.error) throw new HttpError(400, 'Could not update password')
+  await hit(c, 'VULN-16')
+  let claims: any = {}
+  try { claims = JSON.parse(Buffer.from(c.token.split('.')[1], 'base64url').toString()) } catch { /* authenticated middleware already validated the token */ }
+  await db().from('scenario_events').insert({ trainee_id: c.userId, scenario_id: 'VULN-16', action: 'password_changed_without_session_revocation', resource_id: claims.session_id ?? c.userId, metadata: { token_hash: sha256(c.token), expires_at: claims.exp ?? null } })
   await audit(c, 'account.password_changed', 'user', c.userId)
   return { ok: true }
 })
@@ -256,14 +302,16 @@ route('GET', '/v2/account/sessions', async c => must(await db().from('sessions')
 route('POST', '/v2/account/sessions/register', async c => {
   const ua = c.req.headers.get('user-agent') ?? ''
   const device = /iPhone|Android/.test(ua) ? 'Mobile browser' : /Mac/.test(ua) ? 'Mac - Browser' : /Windows/.test(ua) ? 'Windows - Browser' : 'Web browser'
+  let tokenClaims: any
+  try { tokenClaims = JSON.parse(Buffer.from(c.token.split('.')[1], 'base64url').toString()) } catch { throw new HttpError(401, 'Your session is not valid') }
+  need(isUuid(tokenClaims.session_id), 401, 'Your session is not valid')
   await db().from('profiles').update({ last_ip: c.ip }).eq('id', c.userId)
-  return must(await db().from('sessions').insert({ user_id: c.userId, device, ip: c.ip, user_agent: ua.slice(0, 200), location: 'Muscat, OM' }).select('id').single())
+  return must(await db().from('sessions').upsert({ id: tokenClaims.session_id, user_id: c.userId, device, ip: c.ip, user_agent: ua.slice(0, 200), location: 'Muscat, OM', revoked: false }, { onConflict: 'id' }).select('id').single())
 })
 route('DELETE', '/v2/account/sessions/:id', async c => {
   need(isUuid(c.params.id), 404, 'Session not found')
   const { data } = await db().from('sessions').update({ revoked: true }).eq('id', c.params.id).eq('user_id', c.userId).select('id').maybeSingle()
   need(data, 404, 'Session not found')
-  await hit(c, 'S-13')
   return { ok: true }
 })
 route('POST', '/v2/account/sessions/revoke-others', async c => {
@@ -314,12 +362,12 @@ route('POST', '/v2/auth/reset', async c => {
   need(await rateLimit(key, 8, 600), 429, 'Too many attempts. Please try again later.')
   return doReset(c)
 }, { auth: false })
-route('POST', '/v1/auth/reset', async c => { await hit(c, 'S-18'); return doReset(c) }, { auth: false })
+route('POST', '/v1/auth/reset', async c => { await hit(c, 'S-18'); await hit(c, 'VULN-18'); await db().from('scenario_events').insert({ trainee_id: c.userId, scenario_id: 'VULN-18', action: 'legacy_reset_rate_limit_bypassed' }); return doReset(c) }, { auth: false })
 
 // cross-origin widget (embedded in partner portals)
 route('GET', '/v2/widget/me', async c => {
   const origin = c.req.headers.get('origin')
-  if (origin && new URL(c.url).origin !== origin) await hit(c, 'S-19')
+  if (origin && new URL(c.url).origin !== origin) { await hit(c, 'S-19'); await hit(c, 'VULN-19'); await db().from('scenario_events').insert({ trainee_id: c.userId, scenario_id: 'VULN-19', action: 'untrusted_cors_origin_reflected' }) }
   const { data: org } = await db().from('organizations').select('name').eq('id', c.orgId ?? '').maybeSingle()
   return { name: c.profile.full_name, email: c.profile.email, organization: org?.name ?? null, role: c.role }
 })

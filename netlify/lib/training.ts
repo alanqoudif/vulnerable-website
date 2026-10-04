@@ -71,6 +71,23 @@ route('GET', '/instructor/scenarios', async c => {
   })
 })
 
+route('GET', '/instructor/catalogue', async c => {
+  instructor(c)
+  const [catalogue, events, reports] = await Promise.all([
+    db().from('vulnerability_catalog').select('*').order('id'),
+    db().from('scenario_events').select('scenario_id,action,trainee_id,resource_id,created_at'),
+    db().from('security_reports').select('scenario_id,status'),
+  ])
+  const ev = must(events), reps = must(reports)
+  return (must(catalogue) as any[]).map(item => {
+    const triggered = ev.filter((e: any) => e.scenario_id === item.id)
+    const linked = reps.filter((r: any) => r.scenario_id === item.id)
+    return { ...item, triggered: triggered.length > 0, reported: linked.length > 0,
+      validated: linked.some((r: any) => ['Valid','Resolved','Retested'].includes(r.status)),
+      reset: triggered.length === 0, last_triggered_at: triggered.map((e: any) => e.created_at).sort().at(-1) ?? null }
+  })
+})
+
 route('POST', '/instructor/progress', async c => {
   instructor(c)
   const { trainee_id, scenario_id, discovered } = c.body ?? {}

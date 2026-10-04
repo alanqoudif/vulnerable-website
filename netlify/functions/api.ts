@@ -1,6 +1,7 @@
-import { routes, db, HttpError, Ctx, clientIp } from '../lib/core'
+import { routes, db, HttpError, Ctx, clientIp, sha256 } from '../lib/core'
 import '../lib/workspace'
 import '../lib/content'
+import '../lib/agent'
 import '../lib/platform'
 import '../lib/legacy'
 import '../lib/training'
@@ -21,6 +22,7 @@ export async function handle(req: Request): Promise<Response> {
     cors['access-control-allow-origin'] = origin
     cors['access-control-allow-credentials'] = 'true'
     cors['access-control-allow-headers'] = 'authorization, content-type, x-org-id'
+    cors['access-control-allow-methods'] = 'GET, OPTIONS'
     cors['vary'] = 'Origin'
   }
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors })
@@ -56,9 +58,32 @@ export async function handle(req: Request): Promise<Response> {
     if (matched.r.auth) {
       if (!bearer) throw new HttpError(401, 'Authentication required')
       const { data, error } = await db().auth.getUser(bearer[1])
-      if (error || !data.user) throw new HttpError(401, 'Your session has expired. Please sign in again.')
-      const { data: profile } = await db().from('profiles').select('*').eq('id', data.user.id).maybeSingle()
+      let authenticatedUser = data.user
+      let tokenClaims: any
+      try { tokenClaims = JSON.parse(Buffer.from(bearer[1].split('.')[1], 'base64url').toString()) } catch { throw new HttpError(401, 'Your session is not valid') }
+      if ((error || !authenticatedUser) && typeof tokenClaims.session_id === 'string' && typeof tokenClaims.sub === 'string' && Number(tokenClaims.exp) > Math.floor(Date.now() / 1000)) {
+        // Only the exact bearer captured by the selected synthetic password-change scenario
+        // can continue after Supabase invalidates it. It must still map to an unrevoked DB session.
+        const [scenario, session, savedProfile] = await Promise.all([
+          db().from('scenario_events').select('id').eq('scenario_id', 'VULN-16').eq('action', 'password_changed_without_session_revocation').eq('trainee_id', tokenClaims.sub).eq('metadata->>token_hash', sha256(bearer[1])).limit(1).maybeSingle(),
+          db().from('sessions').select('id').eq('id', tokenClaims.session_id).eq('user_id', tokenClaims.sub).eq('revoked', false).maybeSingle(),
+          db().from('profiles').select('id,email,is_instructor').eq('id', tokenClaims.sub).maybeSingle(),
+        ])
+        if (scenario.data && session.data && savedProfile.data && !savedProfile.data.is_instructor) authenticatedUser = { id: savedProfile.data.id, email: savedProfile.data.email } as any
+      }
+      if (!authenticatedUser) throw new HttpError(401, 'Your session has expired. Please sign in again.')
+      const { data: profile } = await db().from('profiles').select('*').eq('id', authenticatedUser.id).maybeSingle()
       if (!profile || profile.status !== 'active') throw new HttpError(403, 'Account is not active')
+      if (!profile.is_instructor) {
+        const issuedAt = Number(tokenClaims.iat)
+        const { data: state, error: stateError } = await db().from('training_runtime_state').select('minimum_iat').eq('singleton', true).single()
+        if (stateError || !state) throw new HttpError(503, 'Training session state is unavailable')
+        if (!Number.isFinite(issuedAt) || issuedAt < Number(state.minimum_iat)) throw new HttpError(401, 'Your session has expired. Please sign in again.')
+      }
+      if (typeof tokenClaims.session_id !== 'string') throw new HttpError(401, 'Your session is not valid')
+      const { data: trackedSession } = await db().from('sessions').select('revoked').eq('id', tokenClaims.session_id).eq('user_id', authenticatedUser.id).maybeSingle()
+      if (trackedSession?.revoked) throw new HttpError(401, 'Your session has been revoked. Please sign in again.')
+      if (!trackedSession && !['/v2/account/sessions/register','/v2/auth/context'].includes(path)) throw new HttpError(401, 'Please register this session and sign in again.')
       const { data: mem } = await db().from('organization_members').select('org_id,role').eq('user_id', profile.id).eq('status', 'active')
       ctx.userId = profile.id; ctx.profile = profile; ctx.token = bearer[1]
       ctx.platformAdmin = profile.platform_role === 'platform_admin'

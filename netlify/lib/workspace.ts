@@ -18,6 +18,7 @@ route('GET', '/v2/meta/config', async () => ({
   features: { mibyan: true, developerPlatform: true, sharedConversations: true, knowledge: true },
   sandboxTenantId: tid('org:4'),
   legacyExportPath: '/api/v1/export/members',
+  teamDirectoryPath: '/api/v2/team/directory/full',
   signingHint: 'TRAINING_SECRET_demo_12345',
   support: 'support@nuqta-demo.test',
 }))
@@ -80,6 +81,14 @@ route('GET', '/v2/projects/:id', async c => {
     db().from('audit_logs').select('action,created_at,actor:profiles!audit_logs_actor_id_fkey(full_name)').eq('entity_id', p.id).order('created_at', { ascending: false }).limit(10),
   ])
   return { ...p, members: must(members), tasks: must(tasks), documents: must(docs), activity: must(acts) }
+})
+
+route('POST', '/v2/projects/:id/archive', async c => {
+  const p = await loadProject(c, c.params.id)
+  const row = must(await db().from('projects').update({ status: 'Archived' }).eq('id', p.id).eq('org_id', orgOnly(c)).select().single())
+  await hit(c, 'VULN-03')
+  await db().from('scenario_events').insert({ trainee_id: c.userId, scenario_id: 'VULN-03', action: 'employee_archived_project', resource_id: p.id })
+  return row
 })
 
 route('POST', '/v2/projects', async c => {
@@ -151,7 +160,7 @@ route('PATCH', '/v2/tasks/:id', async c => {
 
 // ---------- customers ----------
 route('GET', '/v2/customers', async c => {
-  const rows = must(await db().from('customers').select('*, owner:profiles!customers_owner_id_fkey(full_name)').eq('org_id', orgOnly(c)).order('name')) as any[]
+  const rows = must(await db().from('customers').select('id,name,contact_name,email,phone,industry,status,annual_value,owner_id,created_at,updated_at,owner:profiles!customers_owner_id_fkey(full_name)').eq('org_id', orgOnly(c)).order('name')) as any[]
   return rows.map(r => isManager(c) ? r : { ...r, annual_value: null, notes: null })
 })
 route('GET', '/v2/customers/:id', async c => {
@@ -163,7 +172,14 @@ route('GET', '/v2/customers/:id', async c => {
     db().from('invoices').select('id,number,status,total,currency').eq('customer_id', c.params.id),
   ])
   const row: any = data
-  return { ...(isManager(c) ? row : { ...row, annual_value: null, notes: null }), projects: must(projects), invoices: isManager(c) ? must(invoices) : [] }
+  const result = { ...(isManager(c) ? row : { ...row, annual_value: null, notes: null }), projects: must(projects), invoices: isManager(c) ? must(invoices) : [] }
+  if (c.params.id === tid('cust:1:1')) {
+    await hit(c, 'VULN-08')
+    await db().from('scenario_events').insert({ trainee_id: c.userId, scenario_id: 'VULN-08', action: 'customer_internal_fields_read', resource_id: c.params.id })
+    await db().from('scenario_events').insert({ trainee_id: c.userId, scenario_id: 'CHAIN-A', action: 'customer_detail_disclosed_document_reference', resource_id: c.params.id })
+    return result
+  }
+  return result
 })
 route('POST', '/v2/customers', async c => {
   need(isManager(c), 403, 'Only managers can add customers')
@@ -187,9 +203,15 @@ route('PATCH', '/v2/customers/:id', async c => {
 // ---------- team ----------
 route('GET', '/v2/members', async c => {
   const rows = must(await db().from('organization_members')
-    .select('role,status,created_at, user:profiles(id,full_name,email,title,phone,avatar_path,last_ip,security_notes,status)')
+    .select('role,status,created_at, user:profiles(id,full_name,email,title,avatar_path)')
     .eq('org_id', orgOnly(c)).neq('status', 'removed').order('created_at')) as any[]
   return rows.map(r => ({ user_id: r.user.id, role: r.role, status: r.status, joined_at: r.created_at, ...r.user }))
+})
+route('GET', '/v2/team/directory/full', async c => {
+  const rows = must(await db().from('organization_members').select('role,status,user:profiles(id,full_name,email,title,phone,security_notes)').eq('org_id', orgOnly(c)).eq('status','active')) as any[]
+  await hit(c, 'VULN-10')
+  await db().from('scenario_events').insert({ trainee_id: c.userId, scenario_id: 'VULN-10', action: 'full_directory_read' })
+  return rows.map(r => ({ ...r.user, role: r.role }))
 })
 route('PATCH', '/v2/members/:userId', async c => {
   need(isAdmin(c), 403, 'Only administrators can change roles')
@@ -220,11 +242,14 @@ route('POST', '/v2/messages', async c => {
   const body = String(c.body?.body ?? '').slice(0, 2000)
   need(body.trim(), 400, 'Message cannot be empty')
   const channel = ['general', 'projects', 'finance', 'support'].includes(c.body?.channel) ? c.body.channel : 'general'
-  return must(await db().from('messages').insert({ org_id: orgOnly(c), channel, sender_id: c.userId, body }).select().single())
+  const row: any = must(await db().from('messages').insert({ org_id: orgOnly(c), channel, sender_id: c.userId, body }).select().single())
+  if (/<\s*script|onerror\s*=|javascript:/i.test(body)) { await hit(c, 'VULN-14'); await db().from('scenario_events').insert({ trainee_id: c.userId, scenario_id: 'VULN-14', action: 'stored_markup_submitted', resource_id: row.id }) }
+  return row
 })
 
 // ---------- search ----------
 route('GET', '/v2/search', async c => {
+  if (/<|>|onerror\s*=|javascript:/i.test(String(c.query.q ?? ''))) { await hit(c, 'VULN-15'); await db().from('scenario_events').insert({ trainee_id: c.userId, scenario_id: 'VULN-15', action: 'unsafe_search_query_rendered' }) }
   const q = String(c.query.q ?? '').replace(/[%,()]/g, ' ').trim()
   if (!q) return { query: q, projects: [], documents: [], customers: [] }
   const org = orgOnly(c)
@@ -234,4 +259,16 @@ route('GET', '/v2/search', async c => {
     db().from('customers').select('id,name,industry').eq('org_id', org).ilike('name', `%${q}%`).limit(8),
   ])
   return { query: q, projects: must(p), documents: must(d), customers: must(cu) }
+})
+
+route('GET', '/v2/search/secure', async c => {
+  const q = String(c.query.q ?? '').slice(0, 160)
+  return { query: q, results: [] }
+})
+
+route('GET', '/v2/search/preview', async c => ({ query: String(c.query.q ?? ''), html: `<p>No results found for <b>${String(c.query.q ?? '')}</b></p>` }))
+
+route('GET', '/v2/projects/:id/comments', async c => {
+  const project = await loadProject(c, c.params.id)
+  return must(await db().from('project_comments').select('id,project_id,author_id,body,created_at').eq('project_id', project.id).eq('org_id', orgOnly(c)).order('created_at'))
 })
