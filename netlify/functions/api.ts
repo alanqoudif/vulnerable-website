@@ -61,7 +61,8 @@ export async function handle(req: Request): Promise<Response> {
       let authenticatedUser = data.user
       let tokenClaims: any
       try { tokenClaims = JSON.parse(Buffer.from(bearer[1].split('.')[1], 'base64url').toString()) } catch { throw new HttpError(401, 'Your session is not valid') }
-      if ((error || !authenticatedUser) && typeof tokenClaims.session_id === 'string' && typeof tokenClaims.sub === 'string' && Number(tokenClaims.exp) > Math.floor(Date.now() / 1000)) {
+      const validTrainingToken = typeof tokenClaims.session_id === 'string' && typeof tokenClaims.sub === 'string' && Number(tokenClaims.exp) > Math.floor(Date.now() / 1000)
+      if (validTrainingToken && (!authenticatedUser || error)) {
         // Only the exact bearer captured by the selected synthetic password-change scenario
         // can continue after Supabase invalidates it. It must still map to an unrevoked DB session.
         const [scenario, session, savedProfile] = await Promise.all([
@@ -69,6 +70,9 @@ export async function handle(req: Request): Promise<Response> {
           db().from('sessions').select('id').eq('id', tokenClaims.session_id).eq('user_id', tokenClaims.sub).eq('revoked', false).maybeSingle(),
           db().from('profiles').select('id,email,is_instructor').eq('id', tokenClaims.sub).maybeSingle(),
         ])
+        // Password changes revoke Supabase's auth session even though this route
+        // deliberately fails to revoke the training-session row. Permit only that
+        // exact, still-live synthetic token until explicit session revocation/reset.
         if (scenario.data && session.data && savedProfile.data && !savedProfile.data.is_instructor) authenticatedUser = { id: savedProfile.data.id, email: savedProfile.data.email } as any
       }
       if (!authenticatedUser) throw new HttpError(401, 'Your session has expired. Please sign in again.')
@@ -101,7 +105,7 @@ export async function handle(req: Request): Promise<Response> {
     return json(result ?? { ok: true }, 200, cors)
   } catch (e: any) {
     if (e instanceof HttpError) return json({ error: e.message, ...(e.extra ?? {}) }, e.status, cors)
-    console.error('api error', e?.message)
+    console.error('api error', e?.stack ?? e?.message)
     return json({ error: 'Something went wrong. Please try again.' }, 500, cors)
   }
 }
