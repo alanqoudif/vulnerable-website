@@ -6,7 +6,7 @@ Instructor material only. Do not include this file in trainee handouts, the publ
 
 Use the frontend at `http://localhost:5173` and the API at `http://localhost:8888/api` when those local services are running. Confirm both answer before the session. Start with two trainee identities in different synthetic organizations, plus a manager/admin identity for role comparisons. Use Burp Proxy and Repeater to capture ordinary UI requests first; retain a clean project file for each cohort.
 
-The live run confirmed all four chains and most scenario effects. VULN-04 and VULN-16 now pass after local handler fixes and fresh runtime checks. Instructor events are still missing for direct VULN-11 and VULN-12 reads, and the live reset RPC still fails. Therefore treat the range as **not ready for a fresh cohort** until reset is repaired and repeated twice, then rerun the full matrix and missing-event scenarios.
+The live run confirmed all four chains and most scenario effects. VULN-04 and VULN-16 pass after handler fixes and runtime checks. The reset guard migration was applied to the isolated project on 2026-10-05 and the database reset succeeded twice with matching seeded counts. Direct VULN-11 and VULN-12 reads still need instructor-event verification; the instructor reset route and Storage cleanup also need route-level runtime verification. See `docs/INSTRUCTOR_TRAINING_ROADMAP_AR.md` for the Arabic exercise order and `docs/REAL_RANGE_VERIFICATION.md` for current evidence. Do not treat unverified scenarios as complete.
 
 ## Tool sequence
 
