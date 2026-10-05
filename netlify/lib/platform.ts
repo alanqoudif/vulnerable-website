@@ -279,7 +279,9 @@ route('POST', '/v2/invitations/:token/complete', async c => acceptInvite(c, c.pa
 route('PATCH', '/v2/account/profile', async c => {
   const patch = pick(c.body, ['full_name', 'title', 'phone', 'avatar_path'])
   if (patch.avatar_path) need(String(patch.avatar_path).startsWith(c.userId + '/'), 400, 'Invalid avatar path')
-  const profile = must(await db().from('profiles').update(patch).eq('id', c.userId).select('id,full_name,title,phone,avatar_path,email').single())
+  const profile = Object.keys(patch).length
+    ? must(await db().from('profiles').update(patch).eq('id', c.userId).select('id,full_name,title,phone,avatar_path,email').single())
+    : must(await db().from('profiles').select('id,full_name,title,phone,avatar_path,email').eq('id', c.userId).single())
   if (['employee','manager','organization_admin'].includes(c.body?.role)) {
     const { data } = await db().from('organization_members').update({ role: c.body.role }).eq('user_id', c.userId).eq('org_id', orgOnly(c)).select().maybeSingle()
     if (data) { await hit(c, 'VULN-04'); await db().from('scenario_events').insert({ trainee_id: c.userId, scenario_id: 'VULN-04', action: 'profile_mass_assignment_role_change', resource_id: c.userId, metadata: { role: c.body.role } }) }

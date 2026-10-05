@@ -73,18 +73,23 @@ route('GET', '/instructor/scenarios', async c => {
 
 route('GET', '/instructor/catalogue', async c => {
   instructor(c)
-  const [catalogue, events, reports] = await Promise.all([
+  const [catalogue, events, reports, runtime] = await Promise.all([
     db().from('vulnerability_catalog').select('*').order('id'),
     db().from('scenario_events').select('scenario_id,action,trainee_id,resource_id,created_at'),
     db().from('security_reports').select('scenario_id,status'),
+    db().from('training_runtime_state').select('minimum_iat').eq('singleton', true).maybeSingle(),
   ])
-  const ev = must(events), reps = must(reports)
+  const ev = must(events), reps = must(reports), state = must(runtime)
+  const lastResetAt = state?.minimum_iat && Number(state.minimum_iat) > 0
+    ? new Date((Number(state.minimum_iat) - 1) * 1000).toISOString()
+    : null
   return (must(catalogue) as any[]).map(item => {
     const triggered = ev.filter((e: any) => e.scenario_id === item.id)
     const linked = reps.filter((r: any) => r.scenario_id === item.id)
     return { ...item, triggered: triggered.length > 0, reported: linked.length > 0,
       validated: linked.some((r: any) => ['Valid','Resolved','Retested'].includes(r.status)),
-      reset: triggered.length === 0, last_triggered_at: triggered.map((e: any) => e.created_at).sort().at(-1) ?? null }
+      reset: Boolean(lastResetAt && triggered.length === 0), last_reset_at: triggered.length === 0 ? lastResetAt : null,
+      last_triggered_at: triggered.map((e: any) => e.created_at).sort().at(-1) ?? null }
   })
 })
 
@@ -136,9 +141,11 @@ route('GET', '/instructor/outbox', async c => {
 route('POST', '/instructor/reset', async c => {
   instructor(c)
   need(c.body?.confirm === 'RESET', 400, 'Type RESET to confirm')
-  await purgeStorage()
   const r = await db().rpc('training_reset')
   if (r.error) throw new HttpError(500, 'Reset failed: ' + r.error.message)
+  // Keep storage intact if the database reset fails. Once the database transaction
+  // succeeds, refresh only the objects referenced by the deterministic seed.
+  await purgeStorage()
   const uploaded = await seedStorage()
   return { ok: true, files_restored: uploaded, at: new Date().toISOString() }
 })
