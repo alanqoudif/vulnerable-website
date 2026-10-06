@@ -5,6 +5,7 @@ import '../lib/agent'
 import '../lib/platform'
 import '../lib/legacy'
 import '../lib/training'
+import '../lib/grading'
 
 const json = (data: unknown, status = 200, headers: Record<string, string> = {}) =>
   new Response(data === undefined ? null : JSON.stringify(data), { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...headers } })
