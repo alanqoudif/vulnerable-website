@@ -14,6 +14,7 @@ import { Invoices, InvoiceDetail, Plans } from './pages/Finance'
 import { Members, Invitations, OrgSettings, AuditLog } from './pages/Org'
 import { Profile, Security, Sessions, ReportIssue } from './pages/Account'
 import { Restricted, NotFound } from './pages/Misc'
+import TrainingCoach from './components/TrainingCoach'
 
 const Instructor = lazy(() => import('./pages/Instructor'))
 const AdminConsole = lazy(() => import('./pages/AdminConsole'))
@@ -28,9 +29,11 @@ function Protected({ children }: { children: JSX.Element }) {
 }
 
 export default function App() {
+  const location = useLocation()
   return (
-    <Suspense fallback={<Loading />}>
-      <Routes>
+    <>
+      <Suspense fallback={<Loading />}>
+        <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/forgot-password" element={<Forgot />} />
         <Route path="/invite/:token" element={<AcceptInvite />} />
@@ -76,8 +79,10 @@ export default function App() {
           <Route path="debug/*" element={<Restricted />} />
           <Route path="*" element={<NotFound />} />
         </Route>
-      </Routes>
-    </Suspense>
+        </Routes>
+      </Suspense>
+      <TrainingCoach path={location.pathname} />
+    </>
   )
 }
 

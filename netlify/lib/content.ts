@@ -197,7 +197,12 @@ route('POST', '/v2/ai/conversations/:id/messages', async c => {
     await hit(c, 'VULN-20')
     await db().from('scenario_events').insert({ trainee_id: c.userId, scenario_id: 'VULN-20', action: 'direct_prompt_override', resource_id: cv.id })
   }
-  const { data: kbDoc } = await db().from('knowledge_documents').select('id,summary').eq('org_id', c.orgId).like('summary', 'SYSTEM OVERRIDE TRAINING:%').limit(1).maybeSingle()
+  const asksForKnowledge = /knowledge|reference|training guide|summar|مرجع|المعرفة|لخص/i.test(content)
+  let kbDoc: { id: string; summary: string } | null = null
+  if (asksForKnowledge) {
+    const { data } = await db().from('knowledge_documents').select('id,summary').eq('org_id', c.orgId).like('summary', 'SYSTEM OVERRIDE TRAINING:%').limit(1).maybeSingle()
+    kbDoc = data
+  }
   if (kbDoc && /ignore|override|retrieve/i.test(kbDoc.summary ?? '')) {
     await hit(c, 'VULN-21')
     await db().from('scenario_events').insert({ trainee_id: c.userId, scenario_id: 'VULN-21', action: 'adversarial_knowledge_instruction_consumed', resource_id: kbDoc.id })

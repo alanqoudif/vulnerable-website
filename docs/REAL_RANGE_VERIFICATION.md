@@ -34,9 +34,9 @@ Source presence is not runtime proof. Runtime evidence below was collected again
 | VULN-18 | PASS: v2 reset route rate-limited the ninth request; three v1 requests bypassed it. | PASS: v2 returned 429 at its limit. | PASS. | BLOCKED. | BLOCKED |
 | VULN-19 | PASS: widget reflected arbitrary Origin with credentials. | PASS: `/v2/me` emitted no permissive CORS header. | PASS. | BLOCKED. | BLOCKED |
 | VULN-20 | PASS: direct prompt override changed and persisted assistant behavior. | PASS comparison was exercised. | PASS. | BLOCKED. | BLOCKED |
-| VULN-21 | PASS: retrieved adversarial synthetic knowledge altered the assistant response. | PASS comparison was exercised. | PASS. | BLOCKED. | BLOCKED |
+| VULN-21 | Earlier PASS predates the 2026-10-06 retrieval-intent gate; rerun required. | Earlier comparison evidence is stale after that code change. | Previously PASS. | BLOCKED. | BLOCKED |
 | VULN-22 | PASS: document tool returned a foreign synthetic document; normal document route returned 404. | PASS: normal route denied access. | PASS. | BLOCKED. | BLOCKED |
-| VULN-23 | PASS: injected knowledge reached the tool; foreign document content appeared in the persisted AI response. | PASS: ordinary document route denied access. | PASS. | BLOCKED. | BLOCKED |
+| VULN-23 | Earlier PASS predates the 2026-10-06 retrieval-intent gate; rerun required. | Earlier comparison evidence is stale after that code change. | Previously PASS. | BLOCKED. | BLOCKED |
 | VULN-24 | PASS: foreign share-view returned another user's messages. | PASS: normal conversation detail returned 404. Reconfirmed 2026-10-05. | PASS. | BLOCKED. | BLOCKED |
 | VULN-25 | PASS: foreign knowledge resource returned 200. | PASS: normal document detail returned 404; list remained scoped. Reconfirmed 2026-10-05. | PASS. | BLOCKED. | BLOCKED |
 
